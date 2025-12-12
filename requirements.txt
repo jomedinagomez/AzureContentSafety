@@ -1,0 +1,8 @@
+azure-ai-contentsafety
+azure-ai-textanalytics
+openai
+python-dotenv
+pillow
+matplotlib
+requests
+streamlit
