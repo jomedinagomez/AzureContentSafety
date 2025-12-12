@@ -18,13 +18,13 @@ This repo contains:
 Create a `.env` file in the repo root (or set environment variables another way):
 
 Required:
-- `CONTENT_SAFETY_ENDPOINT`
-- `LANGUAGE_ENDPOINT`
+- `MSFT_FOUNDRY_ENDPOINT` (shared Azure AI Services endpoint for Content Safety + Language)
 - `AZURE_OPENAI_ENDPOINT`
 - `AZURE_OPENAI_DEPLOYMENT`
 - `AZURE_OPENAI_API_VERSION`
 
 Optional (only needed if you are not using Entra ID auth via `DefaultAzureCredential`):
+- `CONTENT_SAFETY_ENDPOINT` / `LANGUAGE_ENDPOINT` (only if they live on different regions; otherwise inherit `MSFT_FOUNDRY_ENDPOINT`)
 - `CONTENT_SAFETY_KEY`
 - `LANGUAGE_KEY`
 - `AZURE_OPENAI_KEY`
@@ -32,9 +32,6 @@ Optional (only needed if you are not using Entra ID auth via `DefaultAzureCreden
 Optional knobs:
 - `CONTENT_SAFETY_API_VERSION` (defaults to `2024-09-01`)
 - `SAFETY_SEVERITY_THRESHOLD` (defaults to `2`)
-- `BLOCKLIST_NAMES` (comma-separated, defaults to `demo-blocklist-a,demo-blocklist-b`)
-- `BLOCKLIST_SEED_EXACT` (comma-separated)
-- `BLOCKLIST_SEED_REGEX` (JSON array string recommended)
 
 ## Run (PowerShell)
 

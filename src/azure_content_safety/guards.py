@@ -42,13 +42,15 @@ class Settings:
 def load_settings(*, env: Optional[Dict[str, str]] = None) -> Settings:
     env = env or os.environ
 
-    content_safety_endpoint = (env.get("CONTENT_SAFETY_ENDPOINT") or "").strip()
-    if not content_safety_endpoint:
-        raise RuntimeError("CONTENT_SAFETY_ENDPOINT is required")
+    msft_foundry_endpoint = (env.get("MSFT_FOUNDRY_ENDPOINT") or "").strip()
 
-    language_endpoint = (env.get("LANGUAGE_ENDPOINT") or "").strip()
+    content_safety_endpoint = (env.get("CONTENT_SAFETY_ENDPOINT") or msft_foundry_endpoint).strip()
+    if not content_safety_endpoint:
+        raise RuntimeError("CONTENT_SAFETY_ENDPOINT or MSFT_FOUNDRY_ENDPOINT is required")
+
+    language_endpoint = (env.get("LANGUAGE_ENDPOINT") or msft_foundry_endpoint).strip()
     if not language_endpoint:
-        raise RuntimeError("LANGUAGE_ENDPOINT is required")
+        raise RuntimeError("LANGUAGE_ENDPOINT or MSFT_FOUNDRY_ENDPOINT is required")
 
     azure_openai_endpoint = (env.get("AZURE_OPENAI_ENDPOINT") or "").strip()
     if not azure_openai_endpoint:
@@ -231,6 +233,62 @@ def ensure_blocklist_exists(
     )
     resp.raise_for_status()
     return {"status_code": resp.status_code, "body": (resp.json() if resp.text else {})}
+
+
+def delete_blocklist(
+    settings: Settings,
+    credential: TokenCredential,
+    *,
+    blocklist_name: str,
+    api_version: str = CONTENT_SAFETY_GA_BLOCKLIST_API_VERSION,
+    timeout_s: int = 10,
+) -> Dict[str, Any]:
+    """Delete a blocklist if it exists. Ignores 404 errors."""
+    base = settings.content_safety_endpoint.rstrip("/")
+    url = f"{base}/contentsafety/text/blocklists/{blocklist_name}?api-version={api_version}"
+    headers = _cs_auth_headers(settings, credential, "https://cognitiveservices.azure.com/.default")
+
+    resp = requests.delete(url, headers=headers, timeout=timeout_s)
+    if resp.status_code == 404:
+        return {"status": "missing", "blocklist_name": blocklist_name}
+
+    resp.raise_for_status()
+    return {"status": "deleted", "blocklist_name": blocklist_name}
+
+
+def cleanup_blocklists(
+    settings: Settings,
+    credential: TokenCredential,
+    *,
+    blocklist_names: Optional[Sequence[str]] = None,
+    api_version: str = CONTENT_SAFETY_GA_BLOCKLIST_API_VERSION,
+    timeout_s: int = 10,
+) -> List[Dict[str, Any]]:
+    """Remove existing blocklists so the app can reseed from a clean slate."""
+    names = list(blocklist_names or settings.blocklist_names)
+    results: List[Dict[str, Any]] = []
+    for name in names:
+        try:
+            result = delete_blocklist(
+                settings,
+                credential,
+                blocklist_name=name,
+                api_version=api_version,
+                timeout_s=timeout_s,
+            )
+        except requests.exceptions.HTTPError as exc:
+            error_detail = ""
+            try:
+                error_detail = exc.response.json()
+            except Exception:
+                error_detail = exc.response.text if exc.response else str(exc)
+            result = {
+                "status": "error",
+                "blocklist_name": name,
+                "detail": error_detail,
+            }
+        results.append(result)
+    return results
 
 
 def add_block_items(

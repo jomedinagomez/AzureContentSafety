@@ -19,6 +19,7 @@ from azure_content_safety.guards import (  # noqa: E402
     analyze_text_safety,
     build_clients,
     build_default_credential,
+    cleanup_blocklists,
     check_blocklists,
     detect_jailbreak,
     detect_pii,
@@ -68,8 +69,16 @@ SAMPLE_TEST_CASES = load_sample_test_cases()
 def _init() -> Dict[str, Any]:
     settings = load_settings()
     credential = build_default_credential()
+    cleanup_results = cleanup_blocklists(settings, credential)
+    seed_results = seed_blocklists(settings, credential)
     clients = build_clients(settings, credential=credential)
-    return {"settings": settings, "clients": clients, "credential": credential}
+    return {
+        "settings": settings,
+        "clients": clients,
+        "credential": credential,
+        "blocklist_cleanup": cleanup_results,
+        "blocklist_seed": seed_results,
+    }
 
 
 st.set_page_config(
@@ -140,6 +149,8 @@ try:
     settings = state["settings"]
     clients = state["clients"]
     credential = state["credential"]
+    startup_cleanup = state.get("blocklist_cleanup", [])
+    startup_seed = state.get("blocklist_seed", [])
 except Exception as e:
     st.error(":red[**App configuration is incomplete**]")
     st.code(str(e))
@@ -164,14 +175,18 @@ with st.sidebar:
     st.divider()
     
     st.header("Configuration")
-    env_status = ":green[READY]" if os.getenv('CONTENT_SAFETY_ENDPOINT') and os.getenv('LANGUAGE_ENDPOINT') else ":orange[INCOMPLETE]"
+    msft_base = os.getenv('MSFT_FOUNDRY_ENDPOINT', '').strip()
+    cs_env = os.getenv('CONTENT_SAFETY_ENDPOINT', '').strip() or msft_base
+    lang_env = os.getenv('LANGUAGE_ENDPOINT', '').strip() or msft_base
+    env_status = ":green[READY]" if cs_env and lang_env else ":orange[INCOMPLETE]"
     st.markdown(f"**Environment Status:** {env_status}")
     with st.expander("View details", expanded=False):
         st.code(
             "\n".join(
                 [
-                    f"CONTENT_SAFETY_ENDPOINT={':green[SET]' if os.getenv('CONTENT_SAFETY_ENDPOINT') else ':red[MISSING]'}",
-                    f"LANGUAGE_ENDPOINT={':green[SET]' if os.getenv('LANGUAGE_ENDPOINT') else ':red[MISSING]'}",
+                    f"MSFT_FOUNDRY_ENDPOINT={':green[SET]' if msft_base else ':red[MISSING]'}",
+                    f"CONTENT_SAFETY_ENDPOINT={':green[SET]' if os.getenv('CONTENT_SAFETY_ENDPOINT') else (':blue[USING MSFT_FOUNDRY]' if msft_base else ':red[MISSING]')}",
+                    f"LANGUAGE_ENDPOINT={':green[SET]' if os.getenv('LANGUAGE_ENDPOINT') else (':blue[USING MSFT_FOUNDRY]' if msft_base else ':red[MISSING]')}",
                     "(Keys optional with Entra ID)",
                 ]
             )
@@ -189,6 +204,21 @@ with st.sidebar:
         st.caption("None configured")
     
     st.caption("GA API 2024-09-01 with regex support")
+
+    if startup_cleanup or startup_seed:
+        with st.expander("Startup blocklist refresh", expanded=False):
+            if startup_cleanup:
+                deleted = sum(1 for r in startup_cleanup if r.get("status") == "deleted")
+                missing = sum(1 for r in startup_cleanup if r.get("status") == "missing")
+                st.caption(f"Cleanup: {deleted} deleted, {missing} already missing")
+                errors = [r for r in startup_cleanup if r.get("status") == "error"]
+                if errors:
+                    st.error("One or more blocklists failed to delete")
+                    st.json(errors)
+            if startup_seed:
+                st.caption("Seed results:")
+                st.json(startup_seed)
+
     if st.button("Seed Blocklists", use_container_width=True):
         with st.spinner("Seeding blocklists..."):
             try:
