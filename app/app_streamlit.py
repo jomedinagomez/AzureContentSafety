@@ -7,10 +7,11 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # Load environment variables from .env file before anything else
-load_dotenv(".env")
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"))
 
-# Make ./src importable when running `streamlit run app_streamlit.py`
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Make ./src importable when running `streamlit run app/app_streamlit.py`
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Go up one level from app/
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(ROOT_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
@@ -37,7 +38,7 @@ def _as_pretty_json(data: Any) -> str:
 def load_sample_test_cases() -> Dict[str, str]:
     """Load sample test cases from JSONL file."""
     sample_cases = {}
-    jsonl_path = os.path.join(ROOT_DIR, "sample_test_cases.jsonl")
+    jsonl_path = os.path.join(APP_DIR, "sample_test_cases.jsonl")
     
     try:
         with open(jsonl_path, 'r', encoding='utf-8') as f:
@@ -142,6 +143,10 @@ st.markdown("""
 # Header
 st.title("Azure AI Content Safety Tester")
 st.markdown("Test individual safety evaluators with real-time latency metrics")
+st.info(
+    "Backed by Azure AI Content Safety (blocklists, harmful content, Prompt Shields) "
+    "and Azure AI Language (PII redaction)."
+)
 
 # Initialize settings first
 try:
@@ -384,7 +389,7 @@ if st.button("Run Evaluation", type="primary", use_container_width=True):
                     - Non-blocking: Always runs for redaction purposes
                     
                     **5. Protected Material**
-                    - Detects copyrighted content (stub implementation)
+                    - Calls `text:detectProtectedMaterial` to flag known lyrics/articles/code with citations
                     """)
 
             elif evaluator == "Blocklist":
@@ -727,22 +732,51 @@ if st.button("Run Evaluation", type="primary", use_container_width=True):
                     """)
 
             elif evaluator == "Protected Material":
-                result = detect_protected_material(text=text)
+                result = detect_protected_material(
+                    settings=settings,
+                    credential=credential,
+                    text=text,
+                )
                 
-                # Create tabs for results
                 tab1, tab2, tab3, tab4 = st.tabs(["Status", "Details", "Raw JSON", "About"])
                 
                 with tab1:
                     if result.get("detected"):
                         st.error(":red[**PROTECTED MATERIAL DETECTED**]")
                     else:
-                        st.info("🟢 **SAFE** (stub implementation)")
+                        st.success("🟢 **SAFE** — No protected material detected")
                     
-                    st.metric("⏱️ API Latency", f"{result.get('latency_ms', 0):.2f} ms")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Detection Method", result.get("via", "content-safety"))
+                    with col2:
+                        st.metric("⏱️ API Latency", f"{result.get('latency_ms', 0):.2f} ms")
                 
                 with tab2:
-                    st.info("This is a stub implementation. No detailed analysis available.")
-                    st.caption("Integrate with Azure AI Content Safety Protected Material API for production use.")
+                    analysis = result.get("analysis") or {}
+                    citations = (
+                        result.get("citations")
+                        or analysis.get("citations")
+                        or analysis.get("textCitations")
+                        or analysis.get("codeCitations")
+                        or []
+                    )
+                    if citations:
+                        st.markdown("**Matched Citations:**")
+                        for idx, citation in enumerate(citations, start=1):
+                            license_info = citation.get("license") or citation.get("licenseType") or "unknown"
+                            sources = citation.get("sourceUrls") or citation.get("urls") or []
+                            st.warning(f"Citation {idx} — License: {license_info}")
+                            if sources:
+                                for url in sources:
+                                    st.caption(url)
+                            else:
+                                st.caption("(No source URLs returned)")
+                    elif analysis:
+                        st.info("Service returned analysis metadata without citation matches.")
+                        st.json(analysis)
+                    else:
+                        st.info("No citations returned. Provide full LLM completions to scan for copyrighted passages.")
                 
                 with tab3:
                     st.json(result)
@@ -750,28 +784,21 @@ if st.button("Run Evaluation", type="primary", use_container_width=True):
                 with tab4:
                     st.markdown("##### ©️ Protected Material Detection")
                     st.markdown("""
-                    Detects copyrighted content, lyrics, articles, and code snippets.
+                    Azure AI Content Safety's `text:detectProtectedMaterial` API scans LLM completions for
+                    known copyrighted text (lyrics, articles, recipes, selected web content) and returns
+                    citations/URLs when matches are found. Feed the **LLM output** into this check for the
+                    best signal ([docs](https://learn.microsoft.com/azure/ai-services/content-safety/quickstart-protected-material#analyze-text-for-protected-material-detection)).
                     
-                    **⚠️ Note: This is currently a stub implementation.**
+                    **Highlights**
+                    - Binary detection: `detected = true/false`
+                    - Optional citation metadata (license + source URLs)
+                    - English-language model optimized for 100K-character completions
+                    - GA API version `2024-09-01`
                     
-                    **What It Will Detect (When Implemented):**
-                    - **Text**: Copyrighted book excerpts, articles, song lyrics
-                    - **Code**: Protected code snippets with licensing restrictions
-                    - **Media Citations**: References to copyrighted material
-                    
-                    **Detection Logic:**
-                    - Binary result: Protected material detected or not
-                    - No severity levels
-                    - Returns matched citations and sources when available
-                    
-                    **Integration Steps:**
-                    1. Enable Azure AI Content Safety Protected Material API in your subscription
-                    2. Update `detect_protected_material()` in `guards.py` with API calls
-                    3. Add appropriate error handling and rate limiting
-                    
-                    **Use Case:** Essential for content platforms, publishing, code repositories to avoid copyright violations
-                    
-                    **API:** Azure AI Content Safety Protected Material Detection
+                    **Best Practices**
+                    1. Run on model **outputs** rather than user prompts (per Microsoft guidance)
+                    2. Store citations for audit trails or refusal messaging
+                    3. Combine with blocklists + Prompt Shields for comprehensive coverage
                     """)
 
         except Exception as e:

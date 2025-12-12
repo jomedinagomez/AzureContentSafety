@@ -520,18 +520,104 @@ def detect_jailbreak(
         resp.raise_for_status()
         data = resp.json()
         user_analysis = data.get("userPromptAnalysis", {})
-        return {"detected": bool(user_analysis.get("attackDetected", False)), "analysis": user_analysis, "via": "prompt-shields", "latency_ms": latency_ms}
+        return {
+            "detected": bool(user_analysis.get("attackDetected", False)),
+            "analysis": user_analysis,
+            "request_payload": payload,
+            "response_payload": data,
+            "via": "prompt-shields",
+            "latency_ms": latency_ms,
+        }
     except Exception as e:
         suspicious_patterns = ["ignore previous instructions", "dan mode", "developer mode", "jailbreak"]
         lowered = text.lower()
         for pattern in suspicious_patterns:
             if pattern in lowered:
-                return {"detected": True, "details": f"Jailbreak pattern detected: '{pattern}'", "via": "heuristic", "latency_ms": 0}
-        return {"detected": False, "warning": f"Prompt Shields API fallback used: {e}", "via": "heuristic", "latency_ms": 0}
+                return {
+                    "detected": True,
+                    "details": f"Jailbreak pattern detected: '{pattern}'",
+                    "request_payload": payload,
+                    "response_payload": None,
+                    "via": "heuristic",
+                    "latency_ms": 0,
+                }
+        return {
+            "detected": False,
+            "warning": f"Prompt Shields API fallback used: {e}",
+            "request_payload": payload,
+            "response_payload": None,
+            "via": "heuristic",
+            "latency_ms": 0,
+        }
 
 
-def detect_protected_material(*, text: str) -> Dict[str, Any]:
-    return {"detected": False, "via": "stub", "latency_ms": 0}
+def detect_protected_material(
+    settings: Settings,
+    credential: TokenCredential,
+    *,
+    text: str,
+    timeout_s: int = 10,
+    cs_scope: str = "https://cognitiveservices.azure.com/.default",
+) -> Dict[str, Any]:
+    base_endpoint = settings.content_safety_endpoint.rstrip("/")
+    if not base_endpoint:
+        raise RuntimeError("CONTENT_SAFETY_ENDPOINT (or MSFT_FOUNDRY_ENDPOINT) is required for protected material detection")
+
+    url = f"{base_endpoint}/contentsafety/text:detectProtectedMaterial?api-version={settings.content_safety_api_version}"
+    headers = _cs_auth_headers(settings, credential, cs_scope)
+    payload = {"text": text}
+
+    t0 = time.perf_counter()
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout_s)
+        latency_ms = (time.perf_counter() - t0) * 1000
+        resp.raise_for_status()
+        data = resp.json() if resp.text else {}
+        analysis = data.get("protectedMaterialAnalysis", {})
+        citations = (
+            analysis.get("citations")
+            or analysis.get("textCitations")
+            or analysis.get("codeCitations")
+            or []
+        )
+        return {
+            "detected": bool(analysis.get("detected")),
+            "analysis": analysis,
+            "citations": citations,
+            "request_payload": payload,
+            "response_payload": data,
+            "via": "content-safety-protected-material",
+            "latency_ms": latency_ms,
+        }
+    except requests.exceptions.HTTPError as exc:
+        latency_ms = (time.perf_counter() - t0) * 1000
+        detail: Any = {}
+        if exc.response is not None:
+            try:
+                detail = exc.response.json()
+            except ValueError:
+                detail = exc.response.text
+        return {
+            "detected": False,
+            "error": {
+                "message": str(exc),
+                "detail": detail,
+            },
+            "request_payload": payload,
+            "response_payload": detail,
+            "via": "content-safety-protected-material",
+            "latency_ms": latency_ms,
+        }
+    except Exception as exc:
+        latency_ms = (time.perf_counter() - t0) * 1000
+        return {
+            "detected": False,
+            "error": str(exc),
+            "request_payload": payload,
+            "response_payload": None,
+            "via": "content-safety-protected-material",
+            "latency_ms": latency_ms,
+        }
 
 
 def run_all_checks(
@@ -544,6 +630,7 @@ def run_all_checks(
     cs_client: ContentSafetyClient = clients["cs_client"]
     language_client: TextAnalyticsClient = clients["language_client"]
     credential: TokenCredential = clients["credential"]
+    cs_scope: str = clients.get("cs_scope", "https://cognitiveservices.azure.com/.default")
 
     results: Dict[str, Any] = {
         "stage": stage,
@@ -579,9 +666,14 @@ def run_all_checks(
 
     t0 = time.perf_counter()
     jailbreak_result = detect_jailbreak(settings, credential, text=text)
-    latency = (time.perf_counter() - t0) * 1000
-    results["checks"].append({"check": "jailbreak", "latency_ms": latency, "result": jailbreak_result})
-    results["total_latency_ms"] += latency
+    call_latency = (time.perf_counter() - t0) * 1000
+    displayed_latency = jailbreak_result.get("latency_ms", call_latency)
+    results["checks"].append({
+        "check": "jailbreak",
+        "latency_ms": displayed_latency,
+        "result": jailbreak_result,
+    })
+    results["total_latency_ms"] += call_latency
     if jailbreak_result.get("detected") and not results["blocked"]:
         results["blocked"] = True
         results["block_reason"] = "Jailbreak/prompt injection detected"
@@ -595,10 +687,11 @@ def run_all_checks(
     results["redacted_text"] = pii_result.get("redacted_text", text)
 
     t0 = time.perf_counter()
-    protected_result = detect_protected_material(text=text)
-    latency = (time.perf_counter() - t0) * 1000
-    results["checks"].append({"check": "protected_material", "latency_ms": latency, "result": protected_result})
-    results["total_latency_ms"] += latency
+    protected_result = detect_protected_material(settings, credential, text=text, cs_scope=cs_scope)
+    call_latency = (time.perf_counter() - t0) * 1000
+    displayed_latency = protected_result.get("latency_ms", call_latency)
+    results["checks"].append({"check": "protected_material", "latency_ms": displayed_latency, "result": protected_result})
+    results["total_latency_ms"] += call_latency
     if protected_result.get("detected") and not results["blocked"]:
         results["blocked"] = True
         results["block_reason"] = "Protected material detected"
