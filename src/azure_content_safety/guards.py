@@ -74,7 +74,7 @@ def load_settings(*, env: Optional[Dict[str, str]] = None) -> Settings:
 
     # Enhanced blocklist with more comprehensive examples
     default_exact_items = (
-        "secret_project_x,internal_use_only,forbidden_term,confidential_data,"
+        "secret_project_x,internal_use_only,confidential_data,"
         "classified_info,restricted_access,do_not_share,proprietary_code,"
         "admin_credentials,root_password,master_key,nuclear_codes"
     )
@@ -91,32 +91,27 @@ def load_settings(*, env: Optional[Dict[str, str]] = None) -> Settings:
     elif raw_regex:
         blocklist_seed_regex = [s.strip() for s in raw_regex.split(",") if s.strip()]
     else:
-        # Enhanced regex patterns for various credential and sensitive data patterns
+        # Regex patterns for Azure Content Safety blocklist
+        # Azure uses RE2-like regex which doesn't support backtracking
+        # Avoid: nested quantifiers, backreferences, lookaheads/lookbehinds
+        # Use: character classes, simple quantifiers, alternation
         blocklist_seed_regex = [
-            r"password\\s*[:=]\\s*\\w{6,}",  # password = MyPassword123
-            r"api[_-]?key\\s*[:=]\\s*[A-Za-z0-9]{12,}",  # api_key = abc123def456
-            r"access[_-]?token\\s*[:=]\\s*[A-Za-z0-9]{20,}",  # access_token = long_token
-            r"secret[_-]?key\\s*[:=]\\s*[A-Za-z0-9]{16,}",  # secret_key = mysecret123
-            r"bearer\\s+[A-Za-z0-9\\-._~+/]+",  # Bearer token123
-            r"ssh[_-]?key\\s*[:=]\\s*[\\w\\-]+",  # ssh_key = key123
-            r"private[_-]?key\\s*[:=]\\s*[\\w\\-]+",  # private_key = privatekey
-            r"connection[_-]?string\\s*[:=]\\s*[\\w\\s;=@.]+",  # connection_string = Server=...
+            r"p[a@]ssw[o0]rd[ \t]*[=:][ \t]*[A-Za-z0-9!@#$%^&*]{8,}",
+            r"[a@]pi[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{12,}",
+            r"s[e3]cret[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{12,}",
+            r"[a@]uth[_-]?token[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            r"[a@]ccess[_-]?t[o0]ken[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            r"connection[_-]?string[ \t]*[=:][ \t]*Server=[A-Za-z0-9.-]+;Database=[A-Za-z0-9_-]+;User=[A-Za-z0-9_-]+;Password=[A-Za-z0-9!@#$%^&*]{6,}",
+            r"[Pp]rivate[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            r"[Ss]sh[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            r"[Bb]earer[ \t]+[A-Za-z0-9._=-]{20,}",
+            r"aws[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
         ]
 
-    pii_categories_to_redact = [
-        "Email",
-        "PhoneNumber",
-        "Address",
-        "IPAddress",
-        "CreditCardNumber",
-        "USBankAccountNumber",
-        "USSocialSecurityNumber",
-        "InternationalBankingAccountNumber",
-        "SWIFTCode",
-        "USDriversLicenseNumber",
-        "USPassportNumber",
-        "ABARoutingNumber",
-    ]
+    # All PII categories - comprehensive list from Azure AI Language
+    # If you want to redact ALL PII, leave this list empty or set to []
+    # For selective redaction, specify only the sensitive categories
+    pii_categories_to_redact = []  # Empty list = redact ALL detected PII entities
 
     return Settings(
         content_safety_endpoint=content_safety_endpoint,
@@ -262,13 +257,22 @@ def add_block_items(
 
     base = settings.content_safety_endpoint.rstrip("/")
     url = f"{base}/contentsafety/text/blocklists/{blocklist_name}:addOrUpdateBlocklistItems?api-version={api_version}"
-    resp = requests.post(
-        url,
-        headers=_cs_auth_headers(settings, credential, "https://cognitiveservices.azure.com/.default"),
-        json={"blocklistItems": items},
-        timeout=timeout_s,
-    )
-    resp.raise_for_status()
+    
+    try:
+        resp = requests.post(
+            url,
+            headers=_cs_auth_headers(settings, credential, "https://cognitiveservices.azure.com/.default"),
+            json={"blocklistItems": items},
+            timeout=timeout_s,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        error_detail = ""
+        try:
+            error_detail = resp.json()
+        except:
+            error_detail = resp.text
+        raise RuntimeError(f"Failed to add items to blocklist '{blocklist_name}': {e}. Response: {error_detail}")
 
     data = resp.json() if resp.text else {}
     added_items = [
@@ -284,16 +288,44 @@ def add_block_items(
 
 
 def seed_blocklists(settings: Settings, credential: TokenCredential) -> List[Dict[str, Any]]:
+    """
+    Seeds blocklists with different content based on their names:
+    - demo-blocklist-a: Exact match terms (internal/confidential terms)
+    - demo-blocklist-b: Regex patterns (credential patterns with character class variations)
+    """
     results: List[Dict[str, Any]] = []
     for name in settings.blocklist_names:
         created = ensure_blocklist_exists(settings, credential, blocklist_name=name)
-        added = add_block_items(
-            settings,
-            credential,
-            blocklist_name=name,
-            exact_items=settings.blocklist_seed_exact,
-            regex_items=settings.blocklist_seed_regex,
-        )
+        
+        # Split blocklists by type for better organization
+        if "a" in name.lower():
+            # Blocklist A: Exact match terms only (internal/confidential terms)
+            added = add_block_items(
+                settings,
+                credential,
+                blocklist_name=name,
+                exact_items=settings.blocklist_seed_exact,
+                regex_items=[],  # No regex patterns for blocklist A
+            )
+        elif "b" in name.lower():
+            # Blocklist B: Regex patterns only (credential/secret patterns)
+            added = add_block_items(
+                settings,
+                credential,
+                blocklist_name=name,
+                exact_items=[],  # No exact items for blocklist B
+                regex_items=settings.blocklist_seed_regex,
+            )
+        else:
+            # Other blocklists: Use both exact and regex
+            added = add_block_items(
+                settings,
+                credential,
+                blocklist_name=name,
+                exact_items=settings.blocklist_seed_exact,
+                regex_items=settings.blocklist_seed_regex,
+            )
+        
         results.append({"blocklist_name": name, "created": created, "added": added})
     return results
 
@@ -469,10 +501,9 @@ def run_all_checks(
     latency = (time.perf_counter() - t0) * 1000
     results["checks"].append({"check": "blocklist", "latency_ms": latency, "result": blocklist_result})
     results["total_latency_ms"] += latency
-    if blocklist_result.get("detected"):
+    if blocklist_result.get("detected") and not results["blocked"]:
         results["blocked"] = True
         results["block_reason"] = "Blocklist match"
-        return results
 
     t0 = time.perf_counter()
     safety_result = analyze_text_safety(
@@ -484,20 +515,18 @@ def run_all_checks(
     latency = (time.perf_counter() - t0) * 1000
     results["checks"].append({"check": "content_safety", "latency_ms": latency, "result": safety_result})
     results["total_latency_ms"] += latency
-    if not safety_result.get("safe", False):
+    if not safety_result.get("safe", False) and not results["blocked"]:
         results["blocked"] = True
         results["block_reason"] = "Harmful content detected"
-        return results
 
     t0 = time.perf_counter()
     jailbreak_result = detect_jailbreak(settings, credential, text=text)
     latency = (time.perf_counter() - t0) * 1000
     results["checks"].append({"check": "jailbreak", "latency_ms": latency, "result": jailbreak_result})
     results["total_latency_ms"] += latency
-    if jailbreak_result.get("detected"):
+    if jailbreak_result.get("detected") and not results["blocked"]:
         results["blocked"] = True
         results["block_reason"] = "Jailbreak/prompt injection detected"
-        return results
 
     t0 = time.perf_counter()
     pii_result = detect_pii(language_client, text=text, pii_categories_to_redact=settings.pii_categories_to_redact)
@@ -512,10 +541,9 @@ def run_all_checks(
     latency = (time.perf_counter() - t0) * 1000
     results["checks"].append({"check": "protected_material", "latency_ms": latency, "result": protected_result})
     results["total_latency_ms"] += latency
-    if protected_result.get("detected"):
+    if protected_result.get("detected") and not results["blocked"]:
         results["blocked"] = True
         results["block_reason"] = "Protected material detected"
-        return results
 
     return results
 
