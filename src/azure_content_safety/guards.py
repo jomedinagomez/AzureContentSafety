@@ -98,15 +98,52 @@ def load_settings(*, env: Optional[Dict[str, str]] = None) -> Settings:
         # Avoid: nested quantifiers, backreferences, lookaheads/lookbehinds
         # Use: character classes, simple quantifiers, alternation
         blocklist_seed_regex = [
+            # Password detection: Matches "password" (or "p@ssw0rd" leet-speak variants)
+            # followed by = or : and at least 8 alphanumeric/special characters
+            # Example: "password=MySecret123!" or "p@ssword: abc123!@#"
             r"p[a@]ssw[o0]rd[ \t]*[=:][ \t]*[A-Za-z0-9!@#$%^&*]{8,}",
+            
+            # API key detection: Matches "api_key" or "api-key" (or "@pi_key" variants)
+            # followed by = or : and at least 12 alphanumeric/underscore/dash characters
+            # Example: "api_key=abcd1234efgh5678" or "@pi-key: xyz_123_abc"
             r"[a@]pi[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{12,}",
+            
+            # Secret key detection: Matches "secret_key" or "secret-key" (or "s3cret_key" variants)
+            # followed by = or : and at least 12 characters
+            # Example: "secret_key=my_secret_token_123" or "s3cret-key: abc123xyz456"
             r"s[e3]cret[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{12,}",
+            
+            # Auth token detection: Matches "auth_token" or "auth-token" (or "@uth_token" variants)
+            # followed by = or : and at least 16 characters
+            # Example: "auth_token=1234567890abcdef1234" or "@uth-token: token_value_here"
             r"[a@]uth[_-]?token[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            
+            # Access token detection: Matches "access_token" or "access-token" (or "@ccess_t0ken" variants)
+            # followed by = or : and at least 16 characters
+            # Example: "access_token=abc123xyz456def789" or "@ccess_t0ken: long_token_value"
             r"[a@]ccess[_-]?t[o0]ken[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            
+            # Database connection string detection: Matches full connection strings with Server, Database, User, and Password fields
+            # Example: "connection_string=Server=myserver.com;Database=mydb;User=admin;Password=secret123"
             r"connection[_-]?string[ \t]*[=:][ \t]*Server=[A-Za-z0-9.-]+;Database=[A-Za-z0-9_-]+;User=[A-Za-z0-9_-]+;Password=[A-Za-z0-9!@#$%^&*]{6,}",
+            
+            # Private key detection: Matches "private_key" or "private-key" (or "Private_key" variants)
+            # followed by = or : and at least 16 characters
+            # Example: "private_key=abcd1234efgh5678ijkl" or "Private-key: key_value_123456"
             r"[Pp]rivate[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            
+            # SSH key detection: Matches "ssh_key" or "ssh-key" (or "Ssh_key" variants)
+            # followed by = or : and at least 16 characters
+            # Example: "ssh_key=abcd1234efgh5678ijkl" or "Ssh-key: ssh_key_value_here"
             r"[Ss]sh[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
+            
+            # Bearer token detection: Matches "Bearer" (or "bearer") followed by space and at least 20 characters
+            # Common in HTTP Authorization headers
+            # Example: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." or "bearer abc123xyz456..."
             r"[Bb]earer[ \t]+[A-Za-z0-9._=-]{20,}",
+            
+            # AWS key detection: Matches "aws_key" or "aws-key" followed by = or : and at least 16 characters
+            # Example: "aws_key=AKIAIOSFODNN7EXAMPLE" or "aws-key: my_aws_access_key_id"
             r"aws[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
         ]
 
