@@ -147,10 +147,22 @@ def load_settings(*, env: Optional[Dict[str, str]] = None) -> Settings:
             r"aws[_-]?key[ \t]*[=:][ \t]*[A-Za-z0-9_-]{16,}",
         ]
 
-    # All PII categories - comprehensive list from Azure AI Language
-    # If you want to redact ALL PII, leave this list empty or set to []
-    # For selective redaction, specify only the sensitive categories
-    pii_categories_to_redact = []  # Empty list = redact ALL detected PII entities
+    # PII categories to treat as sensitive and redact
+    # Empty list [] = NO categories are considered sensitive (detection only, no redaction)
+    # For selective redaction, specify only the sensitive categories you want to block/redact
+    # Common sensitive categories: Person, Email, PhoneNumber, Address, SSN, CreditCardNumber, etc.
+    # Full list: https://learn.microsoft.com/azure/ai-services/language-service/personally-identifiable-information/concepts/entity-categories
+    pii_categories_to_redact = [
+        "Person",           # Personal names (e.g., "Sarah Johnson")
+        "Email",            # Email addresses
+        "PhoneNumber",      # Phone numbers
+        "Address",          # Physical addresses
+        "SSN",              # Social Security Numbers (US)
+        "CreditCardNumber", # Credit card numbers
+        "IPAddress",        # IP addresses
+        "Date",             # Dates (birthdays, etc.)
+        "Age",              # Age information
+    ]
 
     return Settings(
         content_safety_endpoint=content_safety_endpoint,
